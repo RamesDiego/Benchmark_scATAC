@@ -1,0 +1,347 @@
+---
+title: "signac_ATAC_10X"
+author: "Diego Ramirez Espinosa"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+This analysis is focused on a comparation of annotation using a public 10X multiome datset and using an RNA-seq datset that doesn't correponds to the multiome one
+
+```{r, eval = F}
+library(Seurat)
+library(SeuratData)
+# install the dataset and load requirements 
+library(Seurat)
+library(Signac)
+library(EnsDb.Hsapiens.v86)
+library(ggplot2)
+library(cowplot)
+library(stringi)
+```
+
+
+```{r, eval =F }
+# load both modalities
+pbmc.rna <- LoadData("pbmcMultiome", "pbmc.rna")
+pbmc.atac <- LoadData("pbmcMultiome", "pbmc.atac")
+
+pbmc.rna[["RNA"]] <- as(pbmc.rna[["RNA"]], Class = "Assay5")
+# repeat QC steps performed in the WNN vignette
+pbmc.rna <- subset(pbmc.rna, seurat_annotations != "filtered")
+pbmc.atac <- subset(pbmc.atac, seurat_annotations != "filtered")
+
+# Perform standard analysis of each modality independently RNA analysis
+pbmc.rna <- NormalizeData(pbmc.rna)
+pbmc.rna <- FindVariableFeatures(pbmc.rna)
+pbmc.rna <- ScaleData(pbmc.rna)
+pbmc.rna <- RunPCA(pbmc.rna)
+pbmc.rna <- RunUMAP(pbmc.rna, dims = 1:30)
+
+# ATAC analysis add gene annotation information
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevelsStyle(annotations) <- "UCSC"
+genome(annotations) <- "hg38"
+Annotation(pbmc.atac) <- annotations
+```
+
+```{r, eval =F }
+# We exclude the first dimension as this is typically correlated with sequencing depth
+pbmc.atac <- RunTFIDF(pbmc.atac)
+pbmc.atac <- FindTopFeatures(pbmc.atac, min.cutoff = "q0")
+pbmc.atac <- RunSVD(pbmc.atac)
+pbmc.atac <- RunUMAP(pbmc.atac, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+#pbmc.atac <- FindNeighbors(object = pbmc.atac, reduction = 'lsi', dims = 2:30)
+#pbmc.atac <- FindClusters(object = pbmc.atac, verbose = FALSE, algorithm = 3)
+```
+
+```{r, eval = F}
+# Load the pre-processed scRNA-seq data for PBMCs
+pbmc_rna <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/pbmc_10k_v3.rds")
+pbmc_rna <- UpdateSeuratObject(pbmc_rna)
+```
+
+```{r}
+DimPlot(object = pbmc.atac, label = TRUE) + NoLegend()
+```
+
+
+Grafico usando el analisis 
+```{r, eval = F}
+p1 <- DimPlot(pbmc_rna, group.by = "celltype", label = TRUE) + NoLegend() + ggtitle("RNA")
+p2 <- DimPlot(pbmc.atac, group.by = "orig.ident", label = FALSE) + NoLegend() + ggtitle("ATAC")
+p1 + p2
+```
+
+```{r, eval = F}
+p1 <- DimPlot(pbmc.rna, group.by = "seurat_annotations", label = TRUE) + NoLegend() + ggtitle("RNA")
+p2 <- DimPlot(pbmc.atac, group.by = "orig.ident", label = FALSE) + NoLegend() + ggtitle("ATAC")
+p1 + p2
+```
+
+
+#Analysis with 3k reference
+
+```{r, eval = F}
+# quantify gene activity
+gene.activities <- GeneActivity(pbmc.atac)
+```
+
+```{r}
+# add gene activities as a new assay
+pbmc.atac[["ACTIVITY"]] <- CreateAssayObject(counts = gene.activities)
+
+# normalize gene activities
+DefaultAssay(pbmc.atac) <- "ACTIVITY"
+pbmc.atac <- NormalizeData(pbmc.atac, 
+                           normalization.method = 'LogNormalize')
+pbmc.atac <- ScaleData(pbmc.atac, features = rownames(pbmc.atac))
+```
+
+```{r}
+# Identify anchors
+transfer.anchors <- FindTransferAnchors(reference = pbmc_rna, query = pbmc.atac, features = VariableFeatures(object = pbmc.rna),
+    reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+```
+
+############################################################################################################
+############################################################################################################
+############################################################################################################
+ESTE SE USA PARA COMPARAR CON EL 1K
+```{r}
+transfer.anchors <- FindTransferAnchors(
+  reference = pbmc_rna,
+  query = pbmc.atac,
+  reduction = 'cca'
+)
+```
+############################################################################################################
+############################################################################################################
+############################################################################################################
+
+```{r}
+predicted.labels <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = pbmc_rna$celltype,
+  weight.reduction = pbmc.atac[["lsi"]], 
+  dims = 2:30)
+````
+
+```{r, eval =F}
+pbmc.atac <- AddMetaData(pbmc.atac, metadata = predicted.labels)
+```
+
+```{r}
+pbmc.atac$annotation_correct <- pbmc.atac$predicted.id == pbmc_rna$celltype
+```
+
+```{r}
+plot1 <- DimPlot(
+  object = pbmc_rna,
+  group.by = 'celltype',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('Ground-truth annotation_3k')
+
+plot2 <- DimPlot(
+  object = pbmc.atac,
+  group.by = 'predicted.id',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('scATAC-seq')
+
+plot1 + plot2
+```
+
+```{r}
+DefaultAssay(pbmc.atac) <- 'ACTIVITY'
+
+FeaturePlot(
+  object = pbmc.atac,
+  features = c('MS4A1', 'CD3D', 'LEF1', 'NKG7', 'TREM1', 'LYZ'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+```
+
+
+
+#Analysis with the 10k datset.
+
+```{r}
+pbmc.atac <- LoadData("pbmcMultiome", "pbmc.atac")
+pbmc.atac <- subset(pbmc.atac, seurat_annotations != "filtered")
+pbmc.atac <- RunTFIDF(pbmc.atac)
+pbmc.atac <- FindTopFeatures(pbmc.atac, min.cutoff = "q0")
+pbmc.atac <- RunSVD(pbmc.atac)
+pbmc.atac <- RunUMAP(pbmc.atac, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+Annotation(pbmc.atac) <- annotations
+```
+
+
+```{r, eval = F}
+# quantify gene activity
+gene.activities <- GeneActivity(pbmc.atac, features = VariableFeatures(pbmc.rna))
+```
+
+```{r}
+# add gene activities as a new assay
+pbmc.atac[["ACTIVITY"]] <- CreateAssayObject(counts = gene.activities)
+
+# normalize gene activities
+DefaultAssay(pbmc.atac) <- "ACTIVITY"
+pbmc.atac <- NormalizeData(pbmc.atac, 
+                           normalization.method = 'LogNormalize')
+pbmc.atac <- ScaleData(pbmc.atac, features = rownames(pbmc.atac))
+```
+
+```{r}
+# Identify anchors
+transfer.anchors <- FindTransferAnchors(reference = pbmc.rna, query = pbmc.atac, features = VariableFeatures(object = pbmc.rna),
+    reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+```
+
+```{r}
+predicted.labels <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = pbmc.rna$seurat_annotations,
+  weight.reduction = pbmc.atac[["lsi"]], 
+  dims = 2:30)
+````
+
+```{r, eval =F}
+pbmc.atac <- AddMetaData(pbmc.atac, metadata = predicted.labels)
+```
+
+```{r}
+DefaultAssay(pbmc.atac) <- 'ACTIVITY'
+
+FeaturePlot(
+  object = pbmc.atac,
+  features = c('MS4A1', 'CD3D', 'LEF1', 'NKG7', 'TREM1', 'LYZ'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+```
+
+```{r}
+plot1 <- DimPlot(
+  object = pbmc.rna,
+  group.by = 'seurat_annotations',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('Ground-truth annotation_10k')
+
+plot2 <- DimPlot(
+  object = pbmc.atac,
+  group.by = 'predicted.id',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('scATAC-seq')
+
+plot1 + plot2
+```
+
+
+```{r}
+# replace each label with its most likely prediction
+for(i in levels(pbmc.atac)) {
+  cells_to_reid <- WhichCells(pbmc.atac, idents = i)
+  newid <- names(which.max(table(pbmc.atac$predicted.id[cells_to_reid])))
+  Idents(pbmc.atac, cells = cells_to_reid) <- newid
+}
+```
+
+
+
+#Find DA Peaks
+```{r}
+# change back to working with peaks instead of gene activities
+DefaultAssay(pbmc.atac) <- 'ATAC'
+
+da_peaks <- FindMarkers(
+  object = pbmc.atac,
+  ident.1 = "CD4 Naive",
+  ident.2 = "CD14+ Monocytes",
+  test.use = 'LR',
+  latent.vars = 'nCount_peaks'
+)
+head(da_peaks)
+```
+
+```{r}
+plot1 <- VlnPlot(
+  object = pbmc.atac,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.1,
+  idents = c("CD4 Naive","CD14+ Monocytes")
+)
+plot2 <- FeaturePlot(
+  object = pbmc.atac,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.1
+)
+
+plot1 | plot2
+```
+
+```{r}
+# set plotting order
+levels(pbmc.atac) <- c("CD4 Naive","CD4 Memory","CD8 Naive","CD8 effector","Double negative T cell","NK dim", "NK bright", "pre-B cell",'B cell progenitor',"pDC","CD14+ Monocytes",'CD16+ Monocytes')
+
+CoveragePlot(
+  object = pbmc.atac,
+  region = rownames(da_peaks)[1],
+  extend.upstream = 40000,
+  extend.downstream = 20000
+)
+```
+
+
+
+
+
+```{r}
+predictions <- table(pbmc.atac$seurat_annotations, pbmc.atac$predicted.id)
+predictions <- predictions/rowSums(predictions)  # normalize for number of cells in each cell type
+predictions <- as.data.frame(predictions)
+p1 <- ggplot(predictions, aes(Var1, Var2, fill = Freq)) + geom_tile() + scale_fill_gradient(name = "Fraction of cells",
+    low = "#ffffc8", high = "#7d0025") + xlab("Cell type annotation (RNA)") + ylab("Predicted cell type label (ATAC)") +
+    theme_cowplot() + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+correct <- length(which(pbmc.atac$seurat_annotations == pbmc.atac$predicted.id))
+incorrect <- length(which(pbmc.atac$seurat_annotations != pbmc.atac$predicted.id))
+data <- FetchData(pbmc.atac, vars = c("prediction.score.max", "annotation_correct"))
+p2 <- ggplot(data, aes(prediction.score.max, fill = annotation_correct, colour = annotation_correct)) +
+    geom_density(alpha = 0.5) + theme_cowplot() + scale_fill_discrete(name = "Annotation Correct",
+    labels = c(paste0("FALSE (n = ", incorrect, ")"), paste0("TRUE (n = ", correct, ")"))) + scale_color_discrete(name = "Annotation Correct",
+    labels = c(paste0("FALSE (n = ", incorrect, ")"), paste0("TRUE (n = ", correct, ")"))) + xlab("Prediction Score")
+p1 + p2
+```
+
+```{r}
+# note that we restrict the imputation to variable genes from scRNA-seq, but could impute the
+# full transcriptome if we wanted to
+genes.use <- VariableFeatures(pbmc.rna)
+refdata <- GetAssayData(pbmc.rna, assay = "RNA", slot = "data")[genes.use, ]
+
+# refdata (input) contains a scRNA-seq expression matrix for the scRNA-seq cells.  imputation
+# (output) will contain an imputed scRNA-seq matrix for each of the ATAC cells
+imputation <- TransferData(anchorset = transfer.anchors, refdata = refdata, weight.reduction = pbmc.atac[["lsi"]],
+    dims = 2:30)
+pbmc.atac[["RNA"]] <- imputation
+
+coembed <- merge(x = pbmc.rna, y = pbmc.atac)
+
+# Finally, we run PCA and UMAP on this combined object, to visualize the co-embedding of both
+# datasets
+coembed <- ScaleData(coembed, features = genes.use, do.scale = FALSE)
+coembed <- RunPCA(coembed, features = genes.use, verbose = FALSE)
+coembed <- RunUMAP(coembed, dims = 1:30)
+
+DimPlot(coembed, group.by = c("orig.ident", "seurat_annotations"))
+```
+
+
+
+
+
+
+
