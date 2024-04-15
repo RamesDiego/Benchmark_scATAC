@@ -1,0 +1,680 @@
+---
+title: "Signac_ATAC"
+author: "Diego Ramirez Espinosa"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#Individual scATAC-Seq
+
+```{r, eval = F}
+library(Signac)
+library(Seurat)
+#BiocManager::install('EnsDb.Hsapiens.v75')
+library(EnsDb.Hsapiens.v86)
+library(ggplot2)
+library(patchwork)
+#BiocManager::install("scATAC.Explorer")
+library(stringi)
+```
+
+Cargar datos de RNA 10k que se van a usar como referencia posteriormente.
+
+```{r}
+pbmc.rna <- LoadData("pbmcMultiome", "pbmc.rna")
+pbmc.rna <- subset(pbmc.rna, seurat_annotations != "filtered")
+pbmc.rna <- NormalizeData(pbmc.rna)
+pbmc.rna <- FindVariableFeatures(pbmc.rna)
+pbmc.rna <- ScaleData(pbmc.rna)
+pbmc.rna <- RunPCA(pbmc.rna)
+pbmc.rna <- RunUMAP(pbmc.rna, dims = 1:30)
+```
+
+```{r, eval = F}
+#Tuve que instalar htslib con brew
+fragpath <- '/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample1/GSM7040713_ILC_ATAC1_fragments.tsv.gz'
+
+# Define cells
+# If you already have a list of cell barcodes to use you can skip this step
+total_counts <- CountFragments(fragpath)
+cutoff <- 240 # Change this number depending on your dataset!, original tenia 1000
+barcodes <- total_counts[total_counts$frequency_count > cutoff, ]$CB
+
+# Create a fragment object
+frags <- CreateFragmentObject(path = fragpath, cells = barcodes) #El archivo index debe estar comprimido solo una vez
+
+# First call peaks on the dataset
+# If you already have a set of peaks you can skip this step
+peaks <- CallPeaks(frags) #Tuve que instalar macs2 con pip dentro del la terminal 
+
+# Quantify fragments in each peak
+counts_ind <- FeatureMatrix(fragments = frags, features = peaks, cells = barcodes)
+```
+
+```{r, eval = F}
+chrom_assay <- CreateChromatinAssay(
+  counts = counts_ind,
+  sep = c(":", "-"),
+  fragments = '/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/GSM7040713_ILC_ATAC1_fragments.tsv.gz',
+  min.cells = 10,
+  min.features = 200
+)
+```
+
+```{r}
+metadata_ind <- read.csv('/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/GSM7040713_ILC_ATAC1_singlecell.csv', header = TRUE, row.names = 1)
+
+pbmc_ind <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata_ind
+)
+```
+
+This line is created to save the RDS file.
+
+```{r, eval =F}
+saveRDS(pbmc_ind, file = "/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/ILC_.rds")
+```
+
+```{r, eval = F}
+pbmc_ind[['peaks']]
+```
+
+```{r, eval = F}
+granges(pbmc_ind)
+```
+
+```{r, eval =F}
+# extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+
+# change to UCSC style since the data was mapped to hg19
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "hg19"
+```
+
+```{r, eval =F}
+# add the gene information to the object
+Annotation(pbmc_ind) <- annotations
+```
+
+##Computing QC metrics
+
+```{r, eval = F}
+# compute nucleosome signal score per cell
+pbmc_ind <- NucleosomeSignal(object = pbmc_ind)
+
+# compute TSS enrichment score per cell
+#pbmc_ind <- TSSEnrichment(object = pbmc_ind, fast = FALSE)
+
+# add blacklist ratio and fraction of reads in peaks
+pbmc_ind$pct_reads_in_peaks <- pbmc_ind$peak_region_fragments / pbmc_ind$passed_filters * 100
+pbmc_ind$blacklist_ratio <- pbmc_ind$blacklist_region_fragments / pbmc_ind$peak_region_fragments
+```
+
+```{r, eval = F}
+pbmc_ind$nucleosome_group <- ifelse(pbmc_ind$nucleosome_signal > 4, 'NS > 4', 'NS < 4')
+FragmentHistogram(object = pbmc_ind, group.by = 'nucleosome_group')
+```
+
+```{r}
+VlnPlot(
+  object = pbmc_ind,
+  features = c('nCount_peaks', 'blacklist_ratio', 'nucleosome_signal', 'pct_reads_in_peaks'),
+  pt.size = 0.1,
+  ncol = 5
+)
+```
+
+```{r, eval =F}
+pbmc_ind <- subset(
+  x = pbmc_ind,
+  subset = nCount_peaks > 3000 &
+    nCount_peaks < 30000 &
+    pct_reads_in_peaks > 15 &
+    blacklist_ratio < 0.05 &
+    nucleosome_signal < 4 
+)
+pbmc_ind
+```
+
+##Normalization and linear dimensional reduction.
+
+```{r, eval=F}
+pbmc_ind <- RunTFIDF(pbmc_ind)
+pbmc_ind <- FindTopFeatures(pbmc_ind, min.cutoff = 'q0')
+pbmc_ind <- RunSVD(pbmc_ind)
+```
+
+```{r, eval =F}
+DepthCor(pbmc_ind)
+```
+
+##Non-linear reduction dimensionality
+
+```{r, eval =F}
+pbmc_ind <- RunUMAP(object = pbmc_ind, reduction = 'lsi', dims = 2:30)
+pbmc_ind <- FindNeighbors(object = pbmc_ind, reduction = 'lsi', dims = 2:30)
+pbmc_ind <- FindClusters(object = pbmc_ind, verbose = FALSE, algorithm = 3)
+DimPlot(object = pbmc_ind, label = TRUE) + NoLegend()
+```
+
+#Gene activity matrix
+
+```{r, eval = F}
+# Load the pre-processed scRNA-seq data for PBMCs
+pbmc_rna <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/pbmc_10k_v3.rds")
+pbmc_rna <- UpdateSeuratObject(pbmc_rna)
+```
+
+```{r, eval = F}
+gene.activities <- GeneActivity(pbmc_ind, features =VariableFeatures(pbmc_rna))
+```
+
+```{r, eval = F}
+# add the gene activity matrix to the Seurat object as a new assay and normalize it
+pbmc_ind[['ACTIVITY']] <- CreateAssayObject(counts = gene.activities)
+pbmc_ind <- NormalizeData(
+  object = pbmc_ind,
+  assay = 'ACTIVITY',
+  normalization.method = 'LogNormalize',
+)
+pbmc_ind <- ScaleData(pbmc_ind, features = rownames(pbmc_ind))
+```
+
+```{r, eval = F}
+DefaultAssay(pbmc_ind) <- 'ACTIVITY'
+
+FeaturePlot(
+  object = pbmc_ind,
+  features = c('MS4A1', 'CD3D', 'LEF1', 'NKG7', 'TREM1', 'LYZ'),
+  pt.size = 0.1,
+  max.cutoff = 'q95',
+  ncol = 3
+)
+```
+
+En este caso vamos a realizar el análisis con el dataset 3k usándolo como referencia, además vamos a utilizar sus variable features y como query los datos de la estimación de RNA hechos con scATAC-Seq
+
+```{r, eval = F}
+transfer.anchors <- FindTransferAnchors(
+  reference = pbmc_rna,
+  query = pbmc_ind,
+  reduction = 'cca', 
+  features = VariableFeatures(object = pbmc_rna), 
+  query.assay = "ACTIVITY"
+)
+```
+
+```{r, eval=F}
+predicted.labels <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = pbmc_rna$celltype,
+  weight.reduction = pbmc_ind[['lsi']],
+  dims = 2:30
+)
+```
+
+```{r, eval = F}
+pbmc_ind <- AddMetaData(object = pbmc_ind, metadata = predicted.labels)
+```
+
+```{r, eval = F}
+plot1 <- DimPlot(
+  object = pbmc_rna,
+  group.by = 'celltype',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('Ground-truth annotation_3k')
+
+plot2 <- DimPlot(
+  object = pbmc_ind,
+  group.by = 'predicted.id',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('scATAC-seq')
+
+plot1 + plot2
+```
+
+This is the same analysis to get the Chromatin Assay and run the Activity matrix with all protein coding annotations, not only the RNA ones
+
+```{r}
+chrom_assay <- CreateChromatinAssay(
+  counts = counts_ind,
+  sep = c(":", "-"),
+  fragments = '/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/GSM7040713_ILC_ATAC1_fragments.tsv.gz',
+  min.cells = 10,
+  min.features = 200
+)
+
+pbmc_ind <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata_ind
+)
+
+Annotation(pbmc_ind) <- annotations
+
+# compute nucleosome signal score per cell
+pbmc_ind <- NucleosomeSignal(object = pbmc_ind)
+
+# compute TSS enrichment score per cell
+#pbmc_ind <- TSSEnrichment(object = pbmc_ind, fast = FALSE)
+
+# add blacklist ratio and fraction of reads in peaks
+pbmc_ind$pct_reads_in_peaks <- pbmc_ind$peak_region_fragments / pbmc_ind$passed_filters * 100
+pbmc_ind$blacklist_ratio <- pbmc_ind$blacklist_region_fragments / pbmc_ind$peak_region_fragments
+
+pbmc_ind <- subset(
+  x = pbmc_ind,
+  subset = nCount_peaks > 3000 &
+    nCount_peaks < 30000 &
+    pct_reads_in_peaks > 15 &
+    blacklist_ratio < 0.05 &
+    nucleosome_signal < 4 
+)
+
+pbmc_ind <- RunTFIDF(pbmc_ind)
+pbmc_ind <- FindTopFeatures(pbmc_ind, min.cutoff = 'q0')
+pbmc_ind <- RunSVD(pbmc_ind)
+pbmc_ind <- RunUMAP(object = pbmc_ind, reduction = 'lsi', dims = 2:30)
+pbmc_ind <- FindNeighbors(object = pbmc_ind, reduction = 'lsi', dims = 2:30)
+pbmc_ind <- FindClusters(object = pbmc_ind, verbose = FALSE, algorithm = 3)
+```
+
+```{r}
+gene.activities <- GeneActivity(pbmc_ind)
+# add the gene activity matrix to the Seurat object as a new assay and normalize it
+pbmc_ind[['ACTIVITY']] <- CreateAssayObject(counts = gene.activities)
+pbmc_ind <- NormalizeData(
+  object = pbmc_ind,
+  assay = 'ACTIVITY',
+  normalization.method = 'LogNormalize',
+)
+pbmc_ind <- ScaleData(pbmc_ind, features = rownames(pbmc_ind))
+
+transfer.anchors <- FindTransferAnchors(
+  reference = pbmc_rna,
+  query = pbmc_ind,
+  reduction = 'cca', 
+  features = VariableFeatures(object = pbmc_rna), 
+  query.assay = "ACTIVITY"
+)
+
+predicted.labels <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = pbmc_rna$celltype,
+  weight.reduction = pbmc_ind[['lsi']],
+  dims = 2:30
+)
+
+pbmc_ind <- AddMetaData(object = pbmc_ind, metadata = predicted.labels)
+```
+
+```{r}
+plot1 <- DimPlot(
+  object = pbmc_rna,
+  group.by = 'celltype',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('scRNA-seq')
+
+plot2 <- DimPlot(
+  object = pbmc_ind,
+  group.by = 'predicted.id',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('scATAC-seq')
+
+plot1 + plot2
+```
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+#Analysis with Seurat codes (not Signac)
+
+```{r}
+chrom_assay <- CreateChromatinAssay(
+  counts = counts_ind,
+  sep = c(":", "-"),
+  fragments = '/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/GSM7040713_ILC_ATAC1_fragments.tsv.gz',
+  min.cells = 10,
+  min.features = 200
+)
+```
+
+```{r, eval = F}
+pbmc_ind <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata_ind
+)
+```
+
+```{r, eval =F}
+# extract gene annotations from EnsDb
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v75)
+
+# change to UCSC style since the data was mapped to hg19
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "hg19"
+
+# add the gene information to the object
+Annotation(pbmc_ind) <- annotations
+
+# compute nucleosome signal score per cell
+pbmc_ind <- NucleosomeSignal(object = pbmc_ind)
+
+# compute TSS enrichment score per cell
+#pbmc_ind <- TSSEnrichment(object = pbmc_ind, fast = FALSE)
+
+# add blacklist ratio and fraction of reads in peaks
+pbmc_ind$pct_reads_in_peaks <- pbmc_ind$peak_region_fragments / pbmc_ind$passed_filters * 100
+pbmc_ind$blacklist_ratio <- pbmc_ind$blacklist_region_fragments / pbmc_ind$peak_region_fragments
+pbmc_ind <- subset(
+  x = pbmc_ind,
+  subset = nCount_peaks > 3000 &
+    nCount_peaks < 30000 &
+    pct_reads_in_peaks > 15 &
+    blacklist_ratio < 0.05 &
+    nucleosome_signal < 4 
+)
+```
+
+```{r, eval = F}
+pbmc_ind <- RunTFIDF(pbmc_ind)
+pbmc_ind <- FindTopFeatures(pbmc_ind, min.cutoff = "q0")
+pbmc_ind <- RunSVD(pbmc_ind)
+pbmc_ind <- RunUMAP(pbmc_ind, reduction = "lsi", dims = 2:30, reduction.name = "umap.atac", reduction.key = "atacUMAP_")
+```
+
+```{r, eval = F}
+pbmc.rna <- LoadData("pbmcMultiome", "pbmc.rna")
+pbmc.rna <- NormalizeData(pbmc.rna)
+pbmc.rna <- FindVariableFeatures(pbmc.rna)
+pbmc.rna <- ScaleData(pbmc.rna)
+pbmc.rna <- RunPCA(pbmc.rna)
+pbmc.rna <- RunUMAP(pbmc.rna, dims = 1:30)
+
+#####
+pbmc_ind <- FindNeighbors(object = pbmc_ind, reduction = 'lsi', dims = 2:30)
+pbmc_ind <- FindClusters(object = pbmc_ind, verbose = FALSE, algorithm = 3)
+####
+
+p1 <- DimPlot(pbmc.rna, group.by = "seurat_annotations", label = TRUE, repel = T) + NoLegend() + ggtitle("RNA")
+p2 <- DimPlot(pbmc_ind, group.by = "orig.ident", label = F, repel = TRUE) + NoLegend() + ggtitle("ATAC")
+p1 + p2
+```
+
+```{r, eval =F}
+# quantify gene activity
+gene.activities <- GeneActivity(pbmc_ind, features = VariableFeatures(pbmc.rna))
+```
+
+```{r, eval =F}
+# add gene activities as a new assay
+pbmc_ind[["ACTIVITY"]] <- CreateAssayObject(counts = gene.activities)
+
+# normalize gene activities
+DefaultAssay(pbmc_ind) <- "ACTIVITY"
+pbmc_ind <- NormalizeData(pbmc_ind)
+pbmc_ind <- ScaleData(pbmc_ind, features = rownames(pbmc_ind))
+```
+
+```{r, eval =F}
+transfer.anchors <- FindTransferAnchors(reference = pbmc.rna, query = pbmc_ind, features = VariableFeatures(object = pbmc.rna), reference.assay = "RNA", query.assay = "ACTIVITY", reduction = "cca")
+```
+
+```{r, eval =F}
+celltype.predictions <- TransferData(anchorset = transfer.anchors, refdata = pbmc.rna$seurat_annotations,
+    weight.reduction = pbmc_ind[["lsi"]], dims = 2:30)
+
+pbmc_ind <- AddMetaData(pbmc_ind, metadata = celltype.predictions)
+```
+
+```{r, eval =F}
+pbmc_ind$annotation_correct <- pbmc_ind$predicted.id == pbmc.rna$seurat_annotations
+```
+
+```{r, eval =F}
+p1 <- DimPlot(pbmc_ind, group.by = "predicted.id", label = TRUE, repel =T) + NoLegend() + ggtitle("Predicted annotation")
+p2 <- DimPlot(pbmc.rna, group.by = "seurat_annotations", label = TRUE) + NoLegend() + ggtitle("Ground-truth annotation10k")
+p1 | p2
+```
+
+#Differentually accesible peaks between cell types.
+
+```{r}
+# change back to working with peaks instead of gene activities
+DefaultAssay(pbmc) <- 'peaks'
+
+da_peaks <- FindMarkers(
+  object = pbmc,
+  ident.1 = "CD4 Naive",
+  ident.2 = "CD14+ Monocytes",
+  test.use = 'LR',
+  latent.vars = 'nCount_peaks'
+)
+head(da_peaks)
+```
+
+```{r}
+plot1 <- VlnPlot(
+  object = pbmc,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.1,
+  idents = c("CD4 Naive","CD14+ Monocytes")
+)
+plot2 <- FeaturePlot(
+  object = pbmc,
+  features = rownames(da_peaks)[1],
+  pt.size = 0.1
+)
+
+plot1 | plot2
+```
+
+```{r}
+fc <- FoldChange(pbmc, ident.1 = "CD4 Naive", ident.2 = "CD14+ Monocytes")
+# order by fold change
+fc <- fc[order(fc$avg_log2FC, decreasing = TRUE), ]
+head(fc)
+```
+
+```{r}
+open_cd4naive <- rownames(da_peaks[da_peaks$avg_log2FC > 3, ])
+open_cd14mono <- rownames(da_peaks[da_peaks$avg_log2FC < -3, ])
+
+closest_genes_cd4naive <- ClosestFeature(pbmc, regions = open_cd4naive)
+closest_genes_cd14mono <- ClosestFeature(pbmc, regions = open_cd14mono)
+```
+
+```{r}
+head(closest_genes_cd4naive)
+```
+
+```{r}
+head(closest_genes_cd14mono)
+```
+
+#Plotting genomic regions
+
+```{r}
+# set plotting order
+levels(pbmc) <- c("CD4 Naive","CD4 Memory","CD8 Naive","CD8 effector","Double negative T cell","NK dim", "NK bright", "pre-B cell",'B cell progenitor',"pDC","CD14+ Monocytes",'CD16+ Monocytes')
+
+CoveragePlot(
+  object = pbmc,
+  region = rownames(da_peaks)[1],
+  extend.upstream = 40000,
+  extend.downstream = 20000
+)
+```
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+########################################################################################################################## 
+
+#Combined analysis
+
+##Loading and QC of the second sample
+
+```{r, eval = F}
+# process the scATAC data
+# first count fragments per cell
+fragpath <- '/Users/diegoramirez/Documents/Single_cell_codes/scATAC-Seq/data/ILC_scATAC_individual/sample2/GSM7040714_ILC_ATAC2_fragments.tsv.gz'
+fragcounts <- CountFragments(fragpath)
+barcodes <- total_counts[total_counts$frequency_count > cutoff, ]$CB
+atac.cells <- fragcounts[fragcounts$frequency_count > 400, "CB"]
+
+# Create a fragment object
+atac.frags <- CreateFragmentObject(path = fragpath, cells = atac.cells) #El archivo index debe estar comprimido solo una vez
+```
+
+```{r, eval = F}
+# Quantify fragments in each peak
+counts <- FeatureMatrix(fragments = atac.frags, features = granges(pbmc_ind), cells = atac.cells)
+# create object
+atac.assay <- CreateChromatinAssay(
+  counts = counts,
+  min.features = 1000,
+  fragments = atac.frags
+)
+pbmc.atac <- CreateSeuratObject(counts = atac.assay, assay = "peaks")
+pbmc.atac <- subset(pbmc.atac, nCount_peaks > 2000 & nCount_peaks < 30000)
+
+# compute LSI
+pbmc.atac <- FindTopFeatures(pbmc.atac, min.cutoff = 10)
+pbmc.atac <- RunTFIDF(pbmc.atac)
+pbmc.atac <- RunSVD(pbmc.atac)
+```
+
+```{r}
+# first add dataset-identifying metadata
+pbmc.atac$dataset <- "ATAC"
+pbmc_ind$dataset <- "Multiome"
+
+# merge
+pbmc.combined <- merge(pbmc.atac, pbmc_ind)
+
+# process the combined dataset
+pbmc.combined <- FindTopFeatures(pbmc.combined, min.cutoff = 10)
+pbmc.combined <- RunTFIDF(pbmc.combined)
+pbmc.combined <- RunSVD(pbmc.combined)
+pbmc.combined <- RunUMAP(pbmc.combined, reduction = "lsi", dims = 2:30)
+p1 <- DimPlot(pbmc.combined, group.by = "dataset")
+```
+
+```{r}
+# find integration anchors
+integration.anchors <- FindIntegrationAnchors(
+  object.list = list(pbmc_ind, pbmc.atac),
+  anchor.features = rownames(pbmc_ind),
+  reduction = "rlsi",
+  dims = 2:30
+)
+
+# integrate LSI embeddings
+integrated <- IntegrateEmbeddings(
+  anchorset = integration.anchors,
+  reductions = pbmc.combined[["lsi"]],
+  new.reduction.name = "integrated_lsi",
+  dims.to.integrate = 1:30
+)
+
+# create a new UMAP using the integrated embeddings
+integrated <- RunUMAP(integrated, reduction = "integrated_lsi", dims = 2:30)
+p2 <- DimPlot(integrated, group.by = "dataset")
+```
+
+```{r}
+(p1 + ggtitle("Merged")) | (p2 + ggtitle("Integrated"))
+```
+
+##Analysis of the
+
+```{r}
+import_atac <- function(count_path, meta_path, fragment_path){
+  counts <- Read10X_h5(filename = count_path)
+  meta <- read.csv(
+    file = meta_path,
+    header = TRUE,
+    row.names = 1
+  )
+  chrom_assay <- CreateChromatinAssay(
+    counts = counts,
+    fragments = fragment_path,
+    min.cells = 10,
+    min.features = 200
+  )
+  
+  data <- CreateSeuratObject(
+    counts = chrom_assay,
+    assay = "peaks",
+    meta.data = meta
+  )
+  
+  Annotation(data) <- annotations
+  
+  data <- NucleosomeSignal(object = data)
+  data$blacklist_region <- data$blacklist_region_fragments / data$peak_region_fragment
+  data$pct_reads_in_peaks <- data$peak_region_fragments / data$passed_filters * 100
+  
+  low_prf <- quantile(data[["peak_reginon_fragment"]]$peak_region_fragment, probs = 0.02)
+  high_prf <- quantile(data[["peak_reginon_fragment"]]$peak_region_fragment, probs = 0.98)
+  low_prp <- quantile(data[["pct_reads_in_peaks"]]$pct_reads_in_peaks, probs = 0.02)
+  high_blr <- quantile(data[["blacklist_ratio"]]$blacklist_ratio, probs = 0.98)
+  high_ns <- quantile(data[["nucleosome_signal"]]$nucleosome_signal, probs = 0.98)
+  
+  data <- subset(
+    x = data,
+    subset = peak_region_fragment > low_prf &
+      peak_region_fragments < high_prf &
+      pct_reads_in_peaks > low_prp &
+      blacklist_region < high_blr & 
+      nucleosome_signal < high_ns
+  )
+  
+  return(data)
+}
+```
