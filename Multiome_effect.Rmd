@@ -1,0 +1,980 @@
+---
+title: "Multiome integration effect"
+author: "Diego Ramirez Espinosa"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#Integration dataset
+
+This script is created to asses the effect of multiome data addition on scATAC-seq integration. I'm going to use different sample sazes, from 3 thousand to 10 thousand cells.  
+
+To start, I will follow the integration tutorial from Signac, the first step is to create a common peak set using the bed files from each sample, so we have to use Granges R package.
+
+Datasets:
+- 10k cells dataset from 10X: Chromium controller ATAC v2
+- 10k cells dataset from 10X: Chromium X ATAC v2 
+- 10k cells dataset from 10X: Chromium X ATAC v1.1
+- 10k cells dataset from 10X: Chromium X Multiome v1.0
+- 4K cells, ILC sorted from public study: Chromium X pipeline version1.1.0, GSM6449881 - to asses rare cell detection on integration
+
+```{r, eval = F}
+library(Seurat)
+library(Signac)
+library(GenomicRanges)
+library(future)
+library(EnsDb.Hsapiens.v75)
+```
+
+We loaded the bed files to collapse the chromosome positions in order to create a common peak set, more information bout the reduce funciton can be found here: https://stuartlab.org/signac/reference/inter-range-methods
+
+
+```{r, eval = F}
+# read in peak sets
+peaks.10k_01 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/v1/10k_pbmc_ATACv1p1_nextgem_Chromium_X_peaks.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.10k_02 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/controller/10k_pbmc_ATACv2_nextgem_Chromium_Controller_peaks.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.10k_03 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/v2/10k_pbmc_ATACv2_nextgem_Chromium_X_peaks.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.ILC_01 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample1/SM7040713_peaks_ILC_ATAC1.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.ILC_02 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample2/GSM7040714_peaks_ILC_ATAC2.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.ILC_03 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample3/GSM7040715_peaks_ILC_ATAC3.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.multiome <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/multiome_10k/10k_PBMC_Multiome_nextgem_Chromium_X_atac_peaks.bed",
+  col.names = c("chr", "start", "end"))
+
+peaks.3k <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/3k_multiome/pbmc_granulocyte_sorted_3k_atac_peaks.bed",
+  col.names = c("chr", "start", "end")
+)
+
+# convert to genomic ranges 
+gr.10k_01 <- makeGRangesFromDataFrame(peaks.10k_01)
+gr.10k_02 <- makeGRangesFromDataFrame(peaks.10k_02)
+gr.10k_03 <- makeGRangesFromDataFrame(peaks.10k_03)
+gr.ILC_01 <- makeGRangesFromDataFrame(peaks.ILC_01)
+gr.ILC_02 <- makeGRangesFromDataFrame(peaks.ILC_02)
+gr.ILC_03 <- makeGRangesFromDataFrame(peaks.ILC_03)
+gr.multiome <- makeGRangesFromDataFrame(peaks.multiome)
+gr.3k <- makeGRangesFromDataFrame(peaks.3k)
+
+# Create a unified set of peaks to quantify in each dataset using each genomic ranges file previously computed
+combined.10k <- reduce(x = c(gr.10k_01, gr.10k_02, gr.10k_03))
+combined.ILC <- reduce(x = c(gr.ILC_01, gr.ILC_02, gr.ILC_03))
+combined.10k.ILC <- reduce(x = c(gr.10k_01, gr.10k_02, gr.10k_03, gr.ILC_01, gr.ILC_02, gr.ILC_03))
+combined.10k.multiome <- reduce(x = c(gr.10k_01, gr.10k_02, gr.10k_03, gr.multiome))
+combined.ILC.multiome <- reduce(x =c(gr.ILC_01, gr.ILC_02, gr.ILC_03, gr.multiome))
+combined.ILC.3k <- reduce(x = c(gr.ILC_01, gr.ILC_02, gr.ILC_03, gr.3k))
+combined.all <- reduce(x = c(gr.10k_01, gr.10k_02, gr.10k_03, gr.ILC_01, gr.ILC_02, gr.ILC_03, gr.multiome))
+
+# Filter out bad peaks based on length
+peakwidths.10k <- width(combined.10k)
+peakwidths.ILC <- width(combined.ILC)
+peakwidths.10k.ILC <- width(combined.10k.ILC)
+peakwidths.10k.multiome <- width(combined.10k.multiome)
+peakwidths.ILC.multiome <- width(combined.ILC.multiome)
+peakwidths.ILC.3k <- width(combined.ILC.3k)
+peakwidths.all <- width(combined.all)
+```
+
+
+```{r, eval =F}
+combined.10k <- combined.10k[peakwidths.10k  < 10000 & peakwidths.10k > 20]
+combined.10k
+```
+
+```{r, eval =F}
+combined.ILC <- combined.ILC[peakwidths.ILC < 10000 & peakwidths.ILC > 20]
+combined.ILC
+```
+
+```{r, eval =F}
+combined.ILC.3k <- combined.ILC.3k[peakwidths.ILC.3k  < 10000 & peakwidths.ILC.3k > 20]
+combined.ILC.3k
+```
+
+
+
+```{r, eval =F}
+combined.10k.ILC <- combined.10k.ILC[peakwidths.10k.ILC < 10000 & peakwidths.10k.ILC > 20]
+combined.10k.ILC
+```
+
+```{r, eval =F}
+combined.10k.multiome <- combined.10k.multiome[peakwidths.10k.multiome < 10000 & peakwidths.10k.multiome > 20]
+combined.10k.multiome
+```
+
+```{r, eval =F}
+combined.ILC.multiome <- combined.ILC.multiome[peakwidths.ILC.multiome < 10000 & peakwidths.ILC.multiome> 20]
+combined.ILC.multiome
+```
+
+
+```{r, eval =F}
+combined.all <- combined.all[peakwidths.all < 10000 & peakwidths.all > 20]
+combined.all
+```
+Then we have to create the fragment object using the barcode files for each dataset.
+
+```{r, eval = F}
+# load metadata
+md.10k_01 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/v1/10k_pbmc_ATACv1p1_nextgem_Chromium_X_singlecell.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ] # remove the first row
+
+md.10k_02 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/controller/10k_pbmc_ATACv2_nextgem_Chromium_Controller_singlecell.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ]
+
+md.10k_03 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/v2/10k_pbmc_ATACv2_nextgem_Chromium_X_singlecell.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ]
+
+md.ILC_01 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample1/GSM7040713_ILC_ATAC1_singlecell.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+) [-1, ]
+
+md.ILC_02 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample2/GSM7040714_ILC_ATAC2_singlecell.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ]
+
+md.ILC_03 <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample3/GSM7040715_ILC_ATAC3_singlecell.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ]
+
+md.multiome <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/multiome_10k/10k_PBMC_Multiome_nextgem_Chromium_X_per_barcode_metrics.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ]
+
+md.3k.multiome <- read.table(
+  file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/3k_multiome/pbmc_granulocyte_sorted_3k_per_barcode_metrics.csv",
+  stringsAsFactors = FALSE,
+  sep = ",",
+  header = TRUE,
+  row.names = 1
+)[-1, ]
+
+
+
+# perform an initial filtering of low count cells
+#number of non-duplicate, usable read-pairs i.e. "fragments" 
+md.10k_01 <- subset(md.10k_01, md.10k_01$is__cell_barcode > 0)
+md.10k_02 <- subset(md.10k_02, md.10k_02$is__cell_barcode > 0)
+md.10k_03 <- subset(md.10k_03, md.10k_03$is__cell_barcode > 0)
+md.ILC_01 <- subset(md.ILC_01, md.ILC_01$is__cell_barcode > 0)
+md.ILC_02 <- subset(md.ILC_02, md.ILC_02$is__cell_barcode > 0)
+md.ILC_03 <- subset(md.ILC_03, md.ILC_03$is__cell_barcode > 0)
+md.multiome <- subset(md.multiome, md.multiome$is_cell > 0)
+md.3k.multiome <- subset(md.3k.multiome, md.3k.multiome$is_cell > 0)
+
+md.10k_01 <- md.10k_01[md.10k_01$passed_filters > 1000, ] 
+md.10k_02 <- md.10k_02[md.10k_02$passed_filters > 1000, ]
+md.10k_03 <- md.10k_03[md.10k_03$passed_filters > 1000, ]
+md.ILC_01 <- md.ILC_01[md.ILC_01$passed_filters > 500, ]
+md.ILC_02<- md.ILC_02[md.ILC_02$passed_filters > 500, ]
+md.ILC_03<- md.ILC_03[md.ILC_03$passed_filters > 500, ]
+md.multiome <- md.multiome[md.multiome$atac_fragments > 1000, ]
+md.ILC_03<- md.ILC_03[md.ILC_03$passed_filters > 500, ]
+```
+
+Note: I found that the number of rows in the md.10k_01 dataset does not match with the number of cells of the original dataset, I got about 24k barcodes and we know that the total number of cells is about 10K, so i have to compare with the h5 matrix and modify the filters
+
+```{r}
+Matrix.10k.v1 <- Read10X_h5("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/10k_pbmc_ATACv1p1_nextgem_Chromium_X_filtered_peak_bc_matrix.h5")
+colnames(Matriz) #The colnames are the cells since this matrix is a fragment by cell matrix
+```
+
+```{r, eval = F}
+Matrix.10k.Controller <- Read10X_h5("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/10k_pbmc_ATACv2_nextgem_Chromium_Controller_filtered_peak_bc_matrix.h5")
+colnames(Matrix10k_02)
+```
+
+
+As we can observe, the final number of cells is 10609, so we have to compare if the filtered barcodes contains the final barcodes that are actually cells.
+
+```{r}
+shared_barcodes <- intersect(colnames(Matriz), rownames(md.10k_01)) 
+shared_barcodes
+```
+
+```{r, eval = F}
+shared_barcodes02 <- intersect(colnames(Matrix10k_02), rownames(md.10k_02))
+shared_barcodes02
+```
+
+We asure that the number of cells of the datasets are cells, but i have to understand why we have barcodes with usable reads not associable to cells in the 10k cells v1 dataset.
+
+```{r, eval =F}
+num_is_cell <- sum(md.10k_01$is__cell_barcode > 0)
+```
+
+#Fragment object creation
+
+```{r, eval =F}
+# create fragment objects
+frags.10k_01 <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/v1/10k_pbmc_ATACv1p1_nextgem_Chromium_X_fragments.tsv.gz",
+  cells = rownames(md.10k_01)
+)
+
+frags.10k_02 <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/controller/10k_pbmc_ATACv2_nextgem_Chromium_Controller_fragments.tsv.gz",
+  cells = rownames(md.10k_02)
+)
+
+frags.10k_03 <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/v2/10k_pbmc_ATACv2_nextgem_Chromium_X_fragments.tsv.gz",
+  cells = rownames(md.10k_03)
+)
+
+frags.ILC_01 <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample1/GSM7040713_ILC_ATAC1_fragments.tsv.gz",
+  cells = rownames(md.ILC_01)
+)
+
+frags.ILC_02 <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample2/GSM7040714_ILC_ATAC2_fragments.tsv.gz",
+  cells = rownames(md.ILC_02)
+)
+
+frags.ILC_03 <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/ILC/sample3/GSM7040715_ILC_ATAC3_fragments.tsv.gz",
+  cells = rownames(md.ILC_03)
+)
+
+frags.multiome <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/multiome_10k/10k_PBMC_Multiome_nextgem_Chromium_X_atac_fragments.tsv.gz",
+  cells = rownames(md.multiome)
+)
+
+frags.3k.multiome <- CreateFragmentObject(
+  path = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/data/3k_multiome/pbmc_granulocyte_sorted_3k_atac_fragments.tsv.gz",
+  cells = rownames(md.3k.multiome)
+)
+```
+
+We have to crete a feature matrix for each sample and each integrated dataset in order to analyze them, so we create a function to call another function and use it in each set of samples that we want to integrate
+
+```{r, eval =F}
+frags_10k <- c(frags.10k_01, frags.10k_02, frags.10k_03)
+md_10k <- c(md.10k_01, md.10k_02, md.10k_03)
+
+frags_ILC <- c(frags.ILC_01, frags.ILC_02, frags.ILC_03)
+md_ILC <- c(md.ILC_01, md.ILC_02, md.ILC_03)
+
+frags_10k_ILC <- c(frags.10k_01, frags.10k_02, frags.10k_03, frags.ILC_01, frags.ILC_02, frags.ILC_03)
+md_10k_ILC <- c(md.10k_01, md.10k_02, md.10k_03, md.ILC_01, md.ILC_02, md.ILC_03)
+
+frags_10k_multiome <- c(frags.10k_01, frags.10k_02, frags.10k_03, frags.multiome)
+md_10k_multiome <- c(md.10k_01, md.10k_02, md.10k_03, md.multiome)
+
+frags_ILC_multiome <- c(frags.ILC_01, frags.ILC_02, frags.ILC_03, frags.multiome)
+md_ILC_multiome <- c(md.ILC_01, md.ILC_02, md.ILC_03, md.multiome)
+
+frags_all <- c(frags.10k_01, frags.10k_02, frags.10k_03, frags.ILC_01, frags.10k_02, frags.10k_03, frags.multiome)
+md_all <- c(md.10k_01, md.10k_02, md.10k_03, md.ILC_01, md.ILC_02, md.ILC_03, md.multiome)
+
+frags_3k_ILC <- c(frags.ILC_01, frags.ILC_02, frags.ILC_03, frags.3k.multiome)
+md_3k_ILC <- c(md.ILC_01, md.ILC_02, md.ILC_03, md.3k.multiome)
+```
+
+```{r, eval =F}
+saveRDS(frags_10k, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_10k")
+saveRDS(frags_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_ILC")
+saveRDS(frags_10k_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_10k_ILC")
+saveRDS(frags_10k_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_10k_multiome")
+saveRDS(frags_ILC_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_ILC_multiome")
+saveRDS(frags_all, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_all")
+saveRDS(frags_3k_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_3k_ILC")
+```
+
+```{r, eval =F}
+saveRDS(md_10k, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_10k")
+saveRDS(md_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_ILC")
+saveRDS(md_10k_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_10k_ILC")
+saveRDS(md_10k_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_10k_multiome")
+saveRDS(md_ILC_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_ILC_multiome")
+saveRDS(md_all, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_all")
+saveRDS(md_3k_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_3k_multiome")
+```
+
+
+```{r, eval =F}
+CreateFeatureMatrix <- function(frags_list, combined_peaks, metadata_list) {
+  feature_matrices <- list()
+  for (i in seq_along(frags_list)) {
+    counts <- FeatureMatrix(
+      fragments = frags_list[[i]],
+      features = combined_peaks,
+      cells = rownames(metadata_list[[i]])
+    )
+    feature_matrices[[i]] <- counts
+  }
+  return(feature_matrices)
+}
+```
+
+
+##Integration for the 10k cells datasets
+
+```{r, eval = F}
+pbmc_10k <- CreateFeatureMatrix(frags_10k, combined.10k, md_10k)
+```
+
+```{r}
+saveRDS(pbmc_10k, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/pbmc_10k_FMatrix.rds")
+#rm(pbmc_10k)
+```
+
+
+###Integration for the ILC datasets
+
+```{r, eval =F}
+pbmc_ILC <- CreateFeatureMatrix(frags_ILC, combined.ILC, md_ILC)
+```
+
+```{r, eval = F}
+saveRDS(pbmc_ILC, file ="/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/pbmc_ILC_FMatrix.rds")
+#rm(pbmc_ILC)
+```
+
+###Integraiton for the 3k and ILC integration datasets
+
+```{r, eval =F}
+pbmc_3k_ILC <- CreateFeatureMatrix(frags_3k_ILC, combined.ILC.3k, md_3k_ILC)
+```
+
+```{r, eval = F}
+saveRDS(pbmc_3k_ILC, file ="/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_3k_ILC.rds")
+#rm(pbmc_3k_ILC)
+```
+
+###Integration for the 10k and ILC integration datasets
+
+```{r, eval = F}
+pbmc_10k_ILC <- CreateFeatureMatrix(frags_10k_ILC, combined.10k.ILC, md_10k_ILC)
+```
+
+```{r, eval =F}
+saveRDS(pbmc_10k_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/pbmc_10k_ILC_FMatrix.rds")
+#rm(pbmc_10k_ILC)
+```
+
+
+###Integration for the 10k and the multiome datasets
+
+```{r, eval = f}
+pbmc_10k_multiome <- CreateFeatureMatrix(frags_10k_multiome, combined.10k.multiome, md_10k_multiome)
+```
+
+```{r, eval =F}
+saveRDS(pbmc_10k_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/pbmc_10k_multiome_FMatrix.rds")
+# krm(pbmc_10k_multiome)
+```
+
+
+###Integration for the ILC and multiome datasets
+
+```{r, eval = f}
+pbmc_ILC_multiome <- CreateFeatureMatrix(frags_ILC_multiome, combined.ILC.multiome, md_ILC_multiome)
+```
+
+```{r, eval =F}
+saveRDS(pbmc_ILC_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/pbmc_ILC_multiome_FMatrix.rds")
+#rm(pbmc_ILC_multiome)
+```
+
+###Integration of all datasets
+
+We have created the Feature Matrices for each dataset to compare, we need to 
+
+```{r, eval = F}
+pbmc_all <- CreateFeatureMatrix(frags_all, combined.all, md_all)
+```
+
+```{r, eval =F}
+saveRDS(pbmc_all, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/pbmc_all_FMatrix.rds")
+rm(pbmc_all)
+```
+
+
+Once we created all the Feature Matrix for each sample and each integration dataset that we will compare, we can continue with the creation of the ChromatinAssay objects, we have to load again each list of Seurat Objects since we delete the objects to avoid fill the memory
+
+##Definimos las funciones para el procesamiento de cada conjunto de datos
+
+```{r}
+rm(list=ls())
+```
+
+```{r, eval =F}
+# Definir una función para crear los objetos Seurat
+create_seurat_objects <- function(counts_list, frags_list, md_list) {
+  seurat_objects <- list()
+  
+  for (i in seq_along(counts_list)) {
+    # Crear el ChromatinAssay
+    assay <- CreateChromatinAssay(counts_list[[i]], fragments = frags_list[[i]])
+    
+    # Crear el objeto Seurat
+    seurat_obj <- CreateSeuratObject(assay, assay = "ATAC", meta.data = md_list[[i]])
+    
+    # Agregar el objeto Seurat a la lista de resultados
+    seurat_objects[[i]] <- seurat_obj
+  }
+  
+  return(seurat_objects)
+}
+```
+
+```{r, eval =F}
+seurats_filter <- function(seurat_list, min_count = 2000, max_count = 30000) {
+  new_seurat_list <- list()
+  for (i in seq_along(seurat_list)) {
+    seurat <- seurat_list[[i]]
+    subset_seurat <- subset(seurat, nCount_ATAC > min_count & nCount_ATAC < max_count)
+    new_seurat_list[[i]] <- subset_seurat
+  }
+  return(new_seurat_list)
+}
+```
+
+```{r, eval = F}
+get_annotations <- function(seurat_list) {
+  for (i in seq_along(seurat_list)) {
+    annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v75)
+    seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+    genome(annotations) <- "hg19"
+    Annotation(seurat_list[[i]]) <- annotations
+  }
+  return(seurat_list)
+}
+```
+
+```{r, eval = F}
+remove_duplicate_barcodes <- function(seurat_list) {
+  all_cells <- unlist(lapply(seurat_list, function(x) colnames(x)))
+  duplicate_cells <- unique(all_cells[duplicated(all_cells)])
+  duplicate_list <- list()
+  for (i in seq_along(seurat_list)) {
+    duplicate_list_i <- which(colnames(seurat_list[[i]]) %in% duplicate_cells)
+    duplicate_list[[i]] <- duplicate_list_i
+    if (length(duplicate_list_i) > 0) {
+      seurat_list[[i]] <- seurat_list[[i]][, -duplicate_list_i]
+    } else {
+      warning(paste("No duplicate cell names found in Seurat object", i))
+    }
+  }
+  return(seurat_list)
+}
+```
+
+###Create the 10k Seurats list
+
+```{r, eval =F}
+pbmc_10k <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_10k_FMatrix.rds")
+frags_10k <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_10k")
+md_10k <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_10k")
+```
+
+```{r, eval =F}
+Seurats_10k <- create_seurat_objects(pbmc_10k, frags_10k, md_10k)
+Seurats_10k <- seurats_filter(Seurats_10k)
+Seurats_10k <- remove_duplicate_barcodes(Seurats_10k)
+Seurats_10k <- get_annotations(Seurats_10k)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_10k, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_10k")
+rm(list=ls())
+```
+
+
+###Create the ILC Seurats list
+
+```{r, eval =F}
+pbmc_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_ILC_FMatrix.rds")
+frags_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_ILC")
+md_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_ILC")
+```
+
+```{r, eval = F}
+Seurats_ILC <- create_seurat_objects(pbmc_ILC, frags_ILC, md_ILC)
+Seurats_ILC <- seurats_filter(Seurats_ILC)
+Seurats_ILC <- remove_duplicate_barcodes(Seurats_ILC)
+Seurats_ILC <- get_annotations(Seurats_ILC)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_ILC")
+rm(list=ls())
+```
+
+###Create the 3k multiome and ILC Seurats list
+
+```{r, eval =F}
+pbmc_3k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_3k_ILC.rds")
+frags_3k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_3k_ILC")
+md_3k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_3k_multiome")
+```
+
+```{r, eval = F}
+pbmc_3k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_3k_ILC.rds")
+```
+
+```{r, eval = F}
+Seurats_3k_ILC <- create_seurat_objects(pbmc_3k_ILC, frags_3k_ILC, md_3k_ILC)
+Seurats_3k_ILC <- seurats_filter(Seurats_3k_ILC)
+Seurats_3k_ILC <- remove_duplicate_barcodes(Seurats_3k_ILC)
+Seurats_3k_ILC <- get_annotations(Seurats_3k_ILC)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_3k_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_3k_ILC")
+rm(list=ls())
+```
+
+###Create the 10k and the ILC Seurats list
+
+```{r, eval =F}
+pbmc_10k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_10k_ILC_FMatrix.rds")
+frags_10k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_10k_ILC")
+md_10k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_10k_ILC")
+```
+
+```{r, eval =F}
+Seurats_10k_ILC <- create_seurat_objects(pbmc_10k_ILC, frags_10k_ILC, md_10k_ILC)
+Seurats_10k_ILC <- seurats_filter(Seurats_10k_ILC)
+Seurats_10k_ILC <- remove_duplicate_barcodes(Seurats_10k_ILC)
+Seurats_10k_ILC <- get_annotations(Seurats_10k_ILC)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_10k_ILC, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_10k_ILC")
+rm(list=ls())
+```
+
+###Create the 10k and the multiome Seurat list
+
+```{r, eval =F}
+pbmc_10k_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_10k_multiome_FMatrix.rds")
+frags_10k_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_10k_multiome")
+md_10k_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_10k_ILC")
+```
+
+```{r, eval =F}
+pbmc_10k_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_10k_multiome_FMatrix.rds")
+```
+
+```{r, eval = F}
+Seurats_10k_multiome <- create_seurat_objects(pbmc_10k_multiome, frags_10k_multiome, md_10k_multiome)
+Seurats_10k_multiome <- seurats_filter(Seurats_10k_multiome)
+Seurats_10k_multiome <- remove_duplicate_barcodes(Seurats_10k_multiome)
+Seurats_10k_multiome <- get_annotations(Seurats_10k_multiome)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_10k_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_10k_multiome")
+rm(list=ls())
+```
+
+###Create the ILC and the multiome Seurat list
+
+```{r, eval =F}
+pbmc_ILC_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_ILC_multiome_FMatrix.rds")
+frags_ILC_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_ILC_multiome")
+md_ILC_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_ILC_multiome")
+```
+
+```{r, eval =F}
+Seurats_ILC_multiome <- create_seurat_objects(pbmc_ILC_multiome, frags_ILC_multiome, md_ILC_multiome)
+Seurats_ILC_multiome <- seurats_filter(Seurats_ILC_multiome)
+Seurats_ILC_multiome <- remove_duplicate_barcodes(Seurats_ILC_multiome)
+Seurats_ILC_multiome <- get_annotations(Seurats_ILC_multiome)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_ILC_multiome, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_ILC_multiome ")
+rm(list=ls())
+```
+
+###Create the Seurat list for all combination datasets with 10k multiome 
+
+```{r, eval =F}
+pbmc_all <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Feature_matrices/pbmc_all_FMatrix.rds")
+frags_all <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/fragment_files/frags_all")
+md_all <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/metadata_files/md_all")
+```
+
+```{r, eval =F}
+Seurats_all <- create_seurat_objects(pbmc_all, frags_all, md_all)
+Seurats_all <- seurats_filter(Seurats_all)
+Seurats_all <- remove_duplicate_barcodes(Seurats_all)
+Seurats_all <- get_annotations(Seurats_all)
+```
+
+```{r, eval =F}
+saveRDS(Seurats_all, file = "/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_all")
+```
+
+##Merge objects
+
+```{r, eval = F}
+rm(list=ls())
+```
+
+###Merge 10k dataset
+
+```{r, eval =F}
+Seurats_10k <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_10k")
+```
+
+```{r, eval =F}
+Seurats_10k[[1]]$dataset <- "pbmc10k_v1"
+Seurats_10k[[2]]$dataset <- "pbmc10k_Controller"
+Seurats_10k[[3]]$dataset <- "pbmc10k_v2"
+```
+
+```{r, eval =F}
+merged_10k <- merge(
+  x = Seurats_10k[[1]],
+  y = list(Seurats_10k[[2]],Seurats_10k[[3]]),
+  add.cell.ids = c("10k_v1", "10k_Controller", "10k_v2")
+)
+merged_10k[["ATAC"]]
+```
+
+###Merge ILC datasets
+
+```{r, eval =F}
+Seurats_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_ILC")
+```
+
+```{r, eval =F}
+Seurats_ILC[[1]]$dataset <- "ILC_H4"
+Seurats_ILC[[2]]$dataset <- "ILC_H5"
+Seurats_ILC[[3]]$dataset <- "ILC_H6"
+```
+
+```{r, eval = F}
+merged_ILC <- merge(
+  x = Seurats_ILC[[1]],
+  y = list(Seurats_ILC[[2]],Seurats_ILC[[3]])
+)
+merged_ILC[["ATAC"]]
+```
+
+###Merge 3k multiome with ILC datasets
+
+```{r, eval =F}
+Seurats_3k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_3k_ILC")
+```
+
+```{r, eval =F}
+Seurats_3k_ILC[[1]]$dataset <- "ILC_H4"
+Seurats_3k_ILC[[2]]$dataset <- "ILC_H5"
+Seurats_3k_ILC[[3]]$dataset <- "ILC_H6"
+Seurats_3k_ILC[[4]]$dataset <- "multiome_3k"
+```
+
+```{r, eval = F}
+merged_3k_ILC <- merge(
+  x = Seurats_3k_ILC[[1]],
+  y = list(Seurats_3k_ILC[[2]], Seurats_3k_ILC[[3]], Seurats_3k_ILC[[4]])
+)
+merged_3k_ILC[["ATAC"]]
+```
+
+###Merge 10k with ILC datasets
+
+```{r, eval =F}
+Seurats_10k_ILC <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_10k_ILC")
+```
+
+```{r, eval= F}
+Seurats_10k_ILC[[1]]$dataset <- "pbmc10k_v1"
+Seurats_10k_ILC[[2]]$dataset <- "pbmc10k_Controller"
+Seurats_10k_ILC[[3]]$dataset <- "pbmc10k_v2"
+Seurats_10k_ILC[[4]]$dataset <- "ILC_H4"
+Seurats_10k_ILC[[5]]$dataset <- "ILC_H5"
+Seurats_10k_ILC[[6]]$dataset <- "ILC_H6"
+```
+
+```{r, eval =F}
+merged_10k_ILC <- merge(
+  x = Seurats_10k_ILC[[1]],
+  y = list(Seurats_ILC[[2]],Seurats_ILC[[3]], Seurats_ILC[[4]], Seurats_ILC[[5]], Seurats_ILC[[6]])
+)
+merged_10k_ILC[["ATAC"]]
+```
+
+###Merge 10k with multiome dataset
+
+```{r, eval = F}
+Seurats_10k_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_10k_multiome")
+```
+
+```{r, eval = F}
+Seurats_10k_multiome[[1]]$dataset <- "pbmc10k_v1"
+Seurats_10k_multiome[[2]]$dataset <- "pbmc10k_Controller"
+Seurats_10k_multiome[[3]]$dataset <- "pbmc10k_v2"
+Seurats_10k_multiome[[4]]$dataset <- "pbmc_multiome"
+```   
+
+```{r, eval =F}
+merged_10k_multiome <- merge(
+  x = Seurats_10k_multiome[[1]],
+  y = list(Seurats_10k_multiome[[2]], Seurats_10k_multiome[[3]], Seurats_10k_multiome[[4]])
+)
+merged_10k_multiome[["ATAC"]]
+```
+
+
+###Merge ILC with multiome datasets
+
+```{r, eval = F}
+Seurats_ILC_multiome <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_ILC_multiome")
+```
+
+```{r, eval =F}
+Seurats_ILC_multiome[[1]]$dataset <- "ILC_H4"
+Seurats_ILC_multiome[[2]]$dataset <- "ILC_H5"
+Seurats_ILC_multiome[[3]]$dataset <- "ILC_H6"
+Seurats_ILC_multiome[[4]]$dataset <- "pbmc_multiome"
+```
+
+```{r, eval =F}
+merged_ILC_multiome <- merge(
+  x = Seurats_ILC_multiome[[1]],
+  y = list(Seurats_ILC_multiome[[2]], Seurats_ILC_multiome[[3]], Seurats_ILC_multiome[[4]])
+)
+merged_ILC_multiome[["ATAC"]]
+```
+
+
+###Merge all datasets
+
+```{r, eval =F}
+Seurats_all <- readRDS("/Users/diegoramirez/Documents/Single_cell_codes/multiome_effect/output_files/Seurats/Seurats_all")
+```
+
+```{r, eval = F}
+Seurats_all[[1]]$dataset <- "pbmc10k_v1"
+Seurats_all[[2]]$dataset <- "pbmc10k_Controller"
+Seurats_all[[3]]$dataset <- "pbmc10k_v2"
+Seurats_all[[4]]$dataset <- "ILC_H4"
+Seurats_all[[5]]$dataset <- "ILC_H5"
+Seurats_all[[6]]$dataset <- "ILC_H6"
+Seurats_all[[7]]$dataset <- "pbmc_multiome"
+```
+
+```{r, eval F=}
+merged_all <- merge(
+  x = Seurats_all[[1]],
+  y = list(Seurats_all[[2]],Seurats_all[[3]], Seurats_all[[4]], Seurats_all[[5]], Seurats_all[[6]], Seurats_all[[7]])
+)
+merged_all[["ATAC"]]
+```
+
+#Analysis 
+
+We load the reference multiome dataset
+
+```{r}
+library(SeuratData)
+pbmc.rna <- LoadData("pbmcMultiome", "pbmc.rna")
+pbmc.rna[["RNA"]] <- as(pbmc.rna[["RNA"]], Class = "Assay5")
+pbmc.rna <- subset(pbmc.rna, seurat_annotations != "filtered")
+pbmc.rna <- NormalizeData(pbmc.rna)
+pbmc.rna <- FindVariableFeatures(pbmc.rna)
+pbmc.rna <- ScaleData(pbmc.rna)
+pbmc.rna <- RunPCA(pbmc.rna)
+pbmc.rna <- RunUMAP(pbmc.rna, dims = 1:30)
+```
+
+###Dimensional reduction and  clustering for ILC merged dataset 
+
+```{r}
+library(ggplot2)
+merged_ILC <- RunTFIDF(merged_ILC)
+merged_ILC <-FindTopFeatures(merged_ILC, min.cutoff = 20)
+merged_ILC <- RunSVD(merged_ILC)
+merged_ILC <- RunUMAP(merged_ILC, dims = 2:50, reduction = 'lsi')
+plot <- DimPlot(merged_ILC, group.by = "dataset", pt.size = 0.1)
+#ggsave("UMAP_3k_ILC.png", plot)
+plot
+```
+
+The first step is the integration of each dataset, so we have to find the integration anchors
+
+```{r, eval=FALSE}
+run_seurat_operations <- function(seurat_list) {
+  for (i in seq_along(seurat_list)) {
+    seurat <- seurat_list[[i]]
+    seurat <- FindTopFeatures(seurat, min.cutoff = 10)
+    seurat <- RunTFIDF(seurat)
+    seurat <- RunSVD(seurat)
+    seurat_list[[i]] <- seurat
+  }
+  return(seurat_list)
+}
+```
+
+```{r, eval =F}
+Seurats_ILC <- run_seurat_operations(Seurats_ILC)
+```
+
+
+```{r, eval=F}
+integration.anchors <- FindIntegrationAnchors(
+  object.list = Seurats_ILC,
+  anchor.features = 3000,
+  reduction = "rlsi",
+  dims = 2:30
+)
+```
+
+```{r, eval =FALSE}
+integrated <- IntegrateEmbeddings(
+  anchorset = integration.anchors,
+  reductions = merged_ILC[["lsi"]],
+  new.reduction.name = "integrated_lsi",
+  dims.to.integrate = 1:30
+)
+
+#create a new UMAP using the integrated embeddings
+integrated <- RunUMAP(integrated, reduction = "integrated_lsi", dims = 2:30)
+plot2 <- DimPlot(integrated, group.by = "dataset")
+```
+
+```{r, eval =F}
+Merged_vs_Integrated <- (plot + ggtitle("Merged")) | (plot2 + ggtitle("Integrated"))
+Merged_vs_Integrated
+#ggsave(Merged_vs_Integrated)
+```
+
+##Reference mapping
+
+```{r, eval=F}
+integrated.imputated <- FindNeighbors(object = integrated, reduction = 'integrated_lsi', dims = 2:30)
+```
+
+```{r, eval = F}
+integrated.imputated <- FindClusters(object = integrated.imputated, verbose =FALSE, algorithm = 3, resolution = .5)
+```
+
+```{r}
+DimPlot(object = integrated.imputated, label = T) + NoLegend()
+```
+
+```{r, eval =F}
+gene.activities <- GeneActivity(integrated.imputated)
+gene.activities
+```
+
+```{r, eval =F}
+integrated.imputated[['RNA']] <- CreateAssayObject(counts = gene.activities)
+integrated.imputated <- NormalizeData(
+  object = integrated.imputated,
+  assay = "RNA",
+  normalization.method = 'LogNormalize',
+  scale.factor = median(integrated.imputated$nCount_RNA)
+)
+
+integrated.imputated[['RNA']]
+```
+
+```{r, eval =F}
+DefaultAssay(integrated.imputated) <- 'RNA'
+
+FeaturePlot(
+  object = integrated.imputated, 
+  features = c('PLCXD1', 'GTPBP6', 'SHOX', 'ASMTL', 'SLC25A6', 'CSF2RA'),
+  max.cutoff = 'q95'
+)
+```
+
+```{r}
+DefaultAssay(integrated.imputated) <- 'RNA'
+transfer.anchors <- FindTransferAnchors(
+  reference = pbmc.rna,
+  query = integrated.imputated,
+  reduction = 'cca'
+)
+```
+
+```{r}
+predicted.labels <- TransferData(
+  anchorset = transfer.anchors,
+  refdata = pbmc.rna$seurat_annotations,
+  weight.reduction = integrated.imputated[['integrated_lsi']],
+  dims = 2:30
+)
+```
+
+```{r}
+integrated.imputated <- AddMetaData(object = integrated.imputated, metadata = predicted.labels)
+```
+
+```{r}
+Plot_imputated1 <- DimPlot(
+  object = pbmc.rna,
+  group.by = 'seurat_annotations',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('Ground-truth annotation')
+
+Plot_imputated2 <- DimPlot(
+  object = integrated.imputated,
+  group.by = 'predicted.id',
+  label = TRUE,
+  repel = TRUE) + NoLegend() + ggtitle('scATAC-seq')
+
+Plot_imputated1 + Plot_imputated2
+```
+
+
+
